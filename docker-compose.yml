@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: payflow-postgres
+    environment:
+      POSTGRES_DB: payflow
+      POSTGRES_USER: payflow_user
+      POSTGRES_PASSWORD: payflow_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payflow_user -d payflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: payflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Go Ledger Service
+  ledger-service:
+    build:
+      context: ./ledger-service
+      dockerfile: Dockerfile
+    container_name: payflow-ledger
+    environment:
+      DATABASE_URL: postgres://payflow_user:payflow_pass@postgres:5432/payflow?sslmode=disable
+      REDIS_URL: redis:6379
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Node.js API Gateway
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: payflow-api
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgres://payflow_user:payflow_pass@postgres:5432/payflow?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      LEDGER_SERVICE_URL: http://ledger-service:8080
+      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      JWT_REFRESH_SECRET: your-super-secret-refresh-key-change-in-production
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ledger-service:
+        condition: service_started
+    restart: unless-stopped
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: payflow-frontend
+    environment:
+      REACT_APP_API_URL: http://localhost:3001
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
